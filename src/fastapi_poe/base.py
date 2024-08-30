@@ -29,6 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import Message
 from typing_extensions import deprecated, overload
 
+from fastapi_poe.client import PROTOCOL_VERSION, sync_bot_settings
 from fastapi_poe.templates import (
     IMAGE_VISION_ATTACHMENT_TEMPLATE,
     TEXT_ATTACHMENT_TEMPLATE,
@@ -132,6 +133,7 @@ class PoeBot:
 
     path: str = "/"  # Path where this bot will be exposed
     access_key: Optional[str] = None  # Access key for this bot
+    bot_name: Optional[str] = None  # Name of the bot using this PoeBot instance in Poe
     should_insert_attachment_messages: bool = (
         True  # Whether to insert attachment messages into the conversation
     )
@@ -866,6 +868,7 @@ def make_app(
     bot: Union[PoeBot, Sequence[PoeBot]],
     access_key: str = "",
     *,
+    bot_name: str = "",
     api_key: str = "",
     allow_without_key: bool = False,
     app: Optional[FastAPI] = None,
@@ -910,11 +913,18 @@ def make_app(
             raise ValueError(
                 "Cannot provide api_key if the bot object already has an access key"
             )
+
+        if bot.bot_name is None:
+            bot.bot_name = bot_name
+        elif bot_name:
+            raise ValueError(
+                "Cannot provide bot_name if the bot object already has a bot_name"
+            )
         bots = [bot]
     else:
-        if access_key or api_key:
+        if access_key or api_key or bot_name:
             raise ValueError(
-                "When serving multiple bots, the access_key must be set on each bot"
+                "When serving multiple bots, the access_key/bot_name must be set on each bot"
             )
         bots = bot
 
@@ -933,6 +943,37 @@ def make_app(
         if bot_obj.access_key is None and not allow_without_key:
             raise ValueError(f"Missing access key on {bot_obj}")
         _add_routes_for_bot(app, bot_obj)
+        if not bot_obj.bot_name or not bot_obj.access_key:
+            logger.warning("\n************* Warning *************")
+            logger.warning(
+                "Bot name or access key is not set for PoeBot.\n"
+                "Bot settings will NOT be synced automatically on server start/update."
+                "Please remember to sync bot settings manually.\n\n"
+                "For more information, see: https://creator.poe.com/docs/server-bots-functional-guides#updating-bot-settings"
+            )
+            logger.warning("\n************* Warning *************")
+        else:
+            try:
+                settings_response = asyncio.run(
+                    bot_obj.get_settings(
+                        SettingsRequest(version=PROTOCOL_VERSION, type="settings")
+                    )
+                )
+                sync_bot_settings(
+                    bot_name=bot_obj.bot_name,
+                    settings=settings_response.model_dump(),
+                    access_key=bot_obj.access_key,
+                )
+            except Exception as e:
+                logger.error("\n*********** Error ***********")
+                logger.error(
+                    f"Bot settings sync failed for {bot_obj.bot_name}: \n{e}\n\n"
+                )
+                logger.error("Please sync bot settings manually.\n\n")
+                logger.error(
+                    "For more information, see: https://creator.poe.com/docs/server-bots-functional-guides#updating-bot-settings"
+                )
+                logger.error("\n*********** Error ***********")
 
     # Uncomment this line to print out request and response
     # app.add_middleware(LoggingMiddleware)
